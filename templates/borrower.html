@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1 class="page-title">§2 · The Borrower</h1>
+    <p class="page-sub">Who defaults — income, debt burden, tenure and the income-verification paradox. Reactive to the criteria above throughout.</p>
+
+    <section class="kpi-row" id="kpis"></section>
+
+    <section class="grid">
+        <div class="card c3">
+            <h2>Income Level vs Default</h2>
+            <p class="desc">Default rate by annual-income band. Click a bar to filter by income segment.</p>
+            <div class="canvas-wrap"><canvas id="chIncome"></canvas></div>
+            <div class="insight" id="insIncome"></div>
+        </div>
+        <div class="card c3">
+            <h2>Debt Burden (DTI)</h2>
+            <p class="desc">Default rate by existing debt-to-income band — the monthly-stress view.</p>
+            <div class="canvas-wrap"><canvas id="chDti"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Employment Tenure</h2>
+            <p class="desc">Default rate by years in current job — job stability signal.</p>
+            <div class="canvas-wrap"><canvas id="chEmp"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Housing Status</h2>
+            <p class="desc">Default rate by home ownership. Click to filter.</p>
+            <div class="canvas-wrap"><canvas id="chHome"></canvas></div>
+        </div>
+        <div class="card c4">
+            <h2>FICO vs Income — Who Actually Defaults?</h2>
+            <p class="desc">Each dot = 150 loans in the selection. X: avg income, Y: avg FICO, colour: default rate of that cell. Low-left cluster = poor + low income = hot zone.</p>
+            <div class="canvas-wrap"><canvas id="chScatter"></canvas></div>
+        </div>
+        <div class="card c2">
+            <h2>The Verification Paradox</h2>
+            <p class="desc">Verified income loans default MORE — verification targets risky applicants (selection effect).</p>
+            <div class="canvas-wrap"><canvas id="chVerif"></canvas></div>
+            <div class="insight" id="insVerif"></div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+setActiveTab();
+
+bootApp(() => {
+    onFilterChange(() => {
+        const rows = APP.filtered;
+        const k = computeKpis(rows);
+        document.getElementById("kpis").innerHTML =
+            kpiCard("Borrowers", fmtK(k.n), "in current selection") +
+            kpiCard("Default Rate", k.defaultRate.toFixed(2) + "%", fmtK(k.defaults) + " defaulted", "alert") +
+            kpiCard("Avg Income", "$" + fmtK(k.avgInc || 0), "self-reported annual") +
+            kpiCard("Avg FICO", Math.round(k.avgFico), "credit score") +
+            kpiCard("Avg DTI", k.avgDti.toFixed(1), "debt-to-income") +
+            kpiCard("Est. Loss", fmtM(k.loss), "at 85% severity", "alert");
+
+        /* Income */
+        const inc = INCOME_ORDER.map(b => [b, groupBy(rows, r => r.incB).get(b)]).filter(([, v]) => v && v.n > 30);
+        const incChart = makeChart("chIncome",
+            barConfig(inc.map(([b]) => b), inc.map(([, v]) => v.defaultRate), "rgba(47,191,143,.75)"));
+        enableClickDrill(incChart,
+            (i) => `Income ${inc[i][0]} — selection detail`,
+            (i) => rows.filter(r => r.incB === inc[i][0]));
+        if (inc.length >= 2) {
+            const lo = inc[0][1], hi = inc[inc.length - 1][1];
+            document.getElementById("insIncome").innerHTML =
+                `Borrowers earning <b>${inc[0][0]}</b> default at <b>${lo.defaultRate.toFixed(1)}%</b> —
+                 ${(lo.defaultRate / Math.max(hi.defaultRate, .1)).toFixed(1)}× the
+                 ${hi.defaultRate.toFixed(1)}% rate of ${inc[inc.length - 1][0]} earners.`;
+        }
+
+        /* DTI */
+        const dt = DTI_ORDER.map(b => [b, groupBy(rows, r => r.dtiB).get(b)]).filter(([, v]) => v && v.n > 30);
+        makeChart("chDti", barConfig(dt.map(([b]) => b), dt.map(([, v]) => v.defaultRate), "rgba(245,185,66,.75)"));
+
+        /* Employment */
+        const empOrder = ["<1 yr","1 yrs","2 yrs","3 yrs","4 yrs","5 yrs","6 yrs","7 yrs","8 yrs","9 yrs","10+ yrs"];
+        const emp = empOrder.map(b => [b, groupBy(rows, r => r.empB).get(b)]).filter(([, v]) => v && v.n > 100);
+        const empChart = makeChart("chEmp", {
+            type: "line",
+            data: { labels: emp.map(([b]) => b),
+                    datasets: [{ data: emp.map(([, v]) => v.defaultRate), borderColor: COLORS.accent,
+                                 backgroundColor: "rgba(79,140,255,.15)", fill: true, tension: .3, pointRadius: 3 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } }
+        });
+        enableClickDrill(empChart,
+            (i) => `Employment ${emp[i][0]} — selection detail`,
+            (i) => rows.filter(r => r.empB === emp[i][0]));
+
+        /* Home ownership */
+        const hm = [...groupBy(rows, r => r.home).entries()].filter(([, v]) => v.n > 200).sort((a, b) => b[1].n - a[1].n);
+        enableClickFilter(makeChart("chHome",
+            barConfig(hm.map(([h]) => h), hm.map(([, v]) => v.defaultRate), "rgba(79,140,255,.75)", { maxBar: 44 })), "home");
+
+        /* Scatter: income × FICO cells */
+        const incBands = INCOME_ORDER, ficoBands = ["660-699 Good", "700-739 Very Good", "740+ Excellent"];
+        const pts = [];
+        ficoBands.forEach(f => incBands.forEach(iB => {
+            const sub = rows.filter(r => r.ficoB === f && r.incB === iB);
+            if (sub.length > 150) {
+                const g = computeKpis(sub);
+                pts.push({ x: g.avgInc / 1000, y: Math.round(g.avgFico), r: 4 + Math.min(g.defaultRate, 30) / 2,
+                           dr: g.defaultRate, n: g.n });
+            }
+        }));
+        const maxDr = Math.max(...pts.map(p => p.dr), 1);
+        makeChart("chScatter", {
+            type: "bubble",
+            data: { datasets: [{ label: "Cells", data: pts,
+                backgroundColor: pts.map(p => `rgba(239,91,107,${0.25 + 0.65 * (p.dr / maxDr)})`),
+                borderColor: "rgba(239,91,107,.9)" }] },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { callbacks: {
+                    label: c => [` ${c.raw.n.toLocaleString()} loans`, ` avg income: $${Math.round(c.raw.x)}k`,
+                                 ` avg FICO: ${c.raw.y}`, ` default: ${c.raw.dr.toFixed(1)}%`] } } },
+                scales: {
+                    x: { title: { display: true, text: "Avg income ($k)" } },
+                    y: { title: { display: true, text: "Avg FICO" }, min: 655, max: 760 }
+                }
+            }
+        });
+
+        /* Verification paradox */
+        const v = [...groupBy(rows, r => r.verif).entries()].sort((a, b) => a[1].defaultRate - b[1].defaultRate);
+        const vChart = makeChart("chVerif", barConfig(v.map(([s]) => s), v.map(([, g]) => g.defaultRate), "rgba(79,140,255,.75)", { maxBar: 40 }));
+        enableClickDrill(vChart,
+            (i) => `Income: ${v[i][0]} — selection detail`,
+            (i) => rows.filter(r => r.verif === v[i][0]));
+        if (v.length >= 2) {
+            const lo = v[0], hi = v[v.length - 1];
+            document.getElementById("insVerif").innerHTML =
+                `<b>${hi[0]}</b> defaults at <b>${hi[1].defaultRate.toFixed(1)}%</b> vs
+                 <b>${lo[1].defaultRate.toFixed(1)}%</b> for “${lo[0]}”. Verification is triggered for
+                 riskier applicants — selection, not causation.`;
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1 class="page-title">§3 · Product &amp; Pricing</h1>
+    <p class="page-sub">What is being lent, at what price, and whether the price covers the risk it carries.</p>
+
+    <section class="kpi-row" id="kpis"></section>
+
+    <section class="grid">
+        <div class="card c3">
+            <h2>Rate Ladder vs Risk</h2>
+            <p class="desc">Default rate by interest-rate band. Click a bar to filter the page.</p>
+            <div class="canvas-wrap"><canvas id="chRate"></canvas></div>
+            <div class="insight" id="insRate"></div>
+        </div>
+        <div class="card c3">
+            <h2>Term Risk</h2>
+            <p class="desc">36 vs 60-month loans: volume, default rate and pricing. Click to filter.</p>
+            <div class="canvas-wrap"><canvas id="chTerm"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Loan Size vs Default</h2>
+            <p class="desc">Default rate by loan-size bucket — exposure concentration check.</p>
+            <div class="canvas-wrap"><canvas id="chAmt"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Amount Distribution</h2>
+            <p class="desc">Volume ($M) by loan-size bucket — where the book is concentrated.</p>
+            <div class="canvas-wrap"><canvas id="chAmtVol"></canvas></div>
+        </div>
+        <div class="card c4">
+            <h2>Risk-Return Scatter by Purpose</h2>
+            <p class="desc">Each bubble = one loan purpose. X: avg interest rate (reward), Y: default rate (risk), size: volume. Above the diagonal trend = under-priced risk.</p>
+            <div class="canvas-wrap"><canvas id="chRiskReturn"></canvas></div>
+        </div>
+        <div class="card c2">
+            <h2>Pricing Adequacy</h2>
+            <p class="desc">Expected loss vs interest margin per rate band. A band is under-priced when expected loss ≥ margin.</p>
+            <div class="canvas-wrap"><canvas id="chPricing"></canvas></div>
+            <div class="insight" id="insPricing"></div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+setActiveTab();
+
+bootApp(() => {
+    onFilterChange(() => {
+        const rows = APP.filtered;
+        const k = computeKpis(rows);
+        document.getElementById("kpis").innerHTML =
+            kpiCard("Loans", fmtK(k.n), "in scope") +
+            kpiCard("Volume", fmtM(k.volume), "principal issued") +
+            kpiCard("Avg Rate", k.avgRate.toFixed(2) + "%", "portfolio pricing") +
+            kpiCard("Default Rate", k.defaultRate.toFixed(2) + "%", fmtK(k.defaults) + " defaulted", "alert") +
+            kpiCard("Est. Loss", fmtM(k.loss), "85% severity", "alert") +
+            kpiCard("Loss / Volume", k.volume ? (100 * k.loss / k.volume).toFixed(1) + "%" : "—",
+                    "loss as % of issued", "alert");
+
+        /* Rate ladder */
+        const r = RATE_ORDER.map(b => [b, groupBy(rows, rr => rr.rateB).get(b)]).filter(([, v]) => v && v.n > 30);
+        const rateChart = makeChart("chRate",
+            barConfig(r.map(([b]) => b), r.map(([, v]) => v.defaultRate), "rgba(79,140,255,.75)"));
+        enableClickDrill(rateChart,
+            (i) => `Rate band ${r[i][0]} — selection detail`,
+            (i) => rows.filter(rr => rr.rateB === r[i][0]));
+        if (r.length >= 2) {
+            const lo = r[0][1], hi = r[r.length - 1][1];
+            document.getElementById("insRate").innerHTML =
+                `Sub-${r[0][0]} loans default just <b>${lo.defaultRate.toFixed(1)}%</b>;
+                 ${r[r.length - 1][0]} loans default <b>${hi.defaultRate.toFixed(1)}%</b>
+                 (${(hi.defaultRate / Math.max(lo.defaultRate, .1)).toFixed(0)}×). Risk-based pricing is broadly working.`;
+        }
+
+        /* Term */
+        const t = [...groupBy(rows, rr => rr.term).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        enableClickFilter(makeChart("chTerm", {
+            type: "bar",
+            data: { labels: t.map(([x]) => x), datasets: [{ data: t.map(([, v]) => v.defaultRate),
+                backgroundColor: ["rgba(79,140,255,.75)", "rgba(239,91,107,.75)"], borderRadius: 6, maxBarThickness: 60 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } }
+        }), "term");
+
+        /* Amount buckets */
+        const buckets = [...groupBy(rows, rr => Math.floor(rr.amt / 5000) * 5000).entries()].sort((a, b) => a[0] - b[0]);
+        const amtChart = makeChart("chAmt", {
+            type: "line",
+            data: { labels: buckets.map(([b]) => "$" + fmtK(b)),
+                    datasets: [{ data: buckets.map(([, v]) => v.defaultRate), borderColor: COLORS.warn,
+                                 backgroundColor: "rgba(245,185,66,.15)", fill: true, tension: .3, pointRadius: 3 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } }
+        });
+        enableClickDrill(amtChart,
+            (i) => `Loans ~${"$" + fmtK(buckets[i][0])} — selection detail`,
+            (i) => rows.filter(rr => Math.floor(rr.amt / 5000) * 5000 === buckets[i][0]));
+        makeChart("chAmtVol", {
+            type: "bar",
+            data: { labels: buckets.map(([b]) => "$" + fmtK(b)),
+                    datasets: [{ data: buckets.map(([, v]) => v.volume / 1e6),
+                                 backgroundColor: "rgba(79,140,255,.6)", borderRadius: 5, maxBarThickness: 26 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => "$" + v + "M" } } } }
+        });
+
+        /* Risk-return scatter by purpose */
+        const purposes = [...groupBy(rows, rr => rr.purpose).entries()].filter(([, v]) => v.n > 300);
+        const maxVol = Math.max(...purposes.map(([, v]) => v.volume), 1);
+        const rrChart = makeChart("chRiskReturn", {
+            type: "bubble",
+            data: { datasets: [{ data: purposes.map(([name, v]) => ({
+                x: v.avgRate, y: v.defaultRate, r: 5 + 16 * Math.sqrt(v.volume / maxVol), name, n: v.n })) }] },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { callbacks: {
+                    label: c => [` ${c.raw.name}`, ` loans: ${c.raw.n.toLocaleString()}`,
+                                 ` avg rate: ${c.raw.x.toFixed(2)}%`, ` default: ${c.raw.y.toFixed(1)}%`, "↳ click to inspect"] } } },
+                onClick: (e, els) => {
+                    if (!els.length) return;
+                    const p = purposes[els[0].datasetIndex === 0 ? els[0].index : 0];
+                    const idx = els[0].index;
+                    openDrill(`Purpose: ${purposes[idx][0]}`, rows.filter(rr => rr.purpose === purposes[idx][0]));
+                },
+                scales: {
+                    x: { title: { display: true, text: "Avg interest rate % (reward)" }, beginAtZero: false },
+                    y: { title: { display: true, text: "Default rate % (risk)" }, beginAtZero: true }
+                }
+            }
+        });
+
+        /* Pricing adequacy: lifetime expected loss vs LIFETIME interest margin
+           (both scaled to the term, so the comparison is apples-to-apples).
+           Margin = avg coupon − ~4% funding/ops cost, collected over avg term.
+           Expected loss = default rate × 85% severity, one-off. */
+        const bands = r.map(([name, v]) => {
+            const avgTerm = { "<8%": 36, "8-12%": 38, "12-16%": 44, "16%+": 52 }[name] || 40; // months
+            const coupon = v.avgRate;
+            const lifetimeMarginPct = (coupon - 4) * (avgTerm / 12) / 100;  // % of principal
+            const expLossPct = (v.defaultRate / 100) * 0.85;                // % of principal
+            return { name, expLoss: expLossPct * 100, margin: lifetimeMarginPct * 100, ok: lifetimeMarginPct > expLossPct };
+        });
+        makeChart("chPricing", {
+            type: "bar",
+            data: {
+                labels: bands.map(b => b.name),
+                datasets: [
+                    { label: "Expected loss %", data: bands.map(b => b.expLoss),
+                      backgroundColor: "rgba(239,91,107,.75)", borderRadius: 5, maxBarThickness: 26 },
+                    { label: "Est. margin %", data: bands.map(b => b.margin),
+                      backgroundColor: "rgba(47,191,143,.7)", borderRadius: 5, maxBarThickness: 26 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { boxWidth: 12 } } },
+                scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } }
+            }
+        });
+        const worst = bands.filter(b => !b.ok);
+        document.getElementById("insPricing").innerHTML = worst.length
+            ? `⚠️ Under-priced: <b>${worst.map(b => b.name).join(", ")}</b> — expected loss ≥ margin.
+               Top band needs ~${(worst[0].expLoss - worst[0].margin + worst[0].margin).toFixed(0)}%+ pricing.`
+            : `✅ All bands carry margin above expected loss in this selection.`;
+    });
+});
+</script>
+{% endblock %}

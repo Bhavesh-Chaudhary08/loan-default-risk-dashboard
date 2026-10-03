@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1 class="page-title">§1 · Portfolio Overview</h1>
+    <p class="page-sub">Size and condition of the book. All figures respond to the criteria above; select any exhibit to examine a segment in detail.</p>
+
+    <section class="kpi-row" id="kpis"></section>
+
+    <section class="grid">
+        <div class="card c4">
+            <h2>Default Rate by Credit Band (FICO)</h2>
+            <p class="desc">The underwriting risk ladder — bars: default %, line: avg interest rate charged. Click a bar to filter the whole page by FICO band.</p>
+            <div class="canvas-wrap"><canvas id="chGrade"></canvas></div>
+            <div class="insight" id="insGrade"></div>
+        </div>
+        <div class="card c2">
+            <h2>Status Split</h2>
+            <p class="desc">Fully paid vs defaulted in the current selection. Click a slice to drill into it.</p>
+            <div class="canvas-wrap"><canvas id="chStatus"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Loss by Loan Purpose</h2>
+            <p class="desc">Estimated realised loss ($M) — where the dollars leak. Click to filter by purpose.</p>
+            <div class="canvas-wrap"><canvas id="chPurposeLoss"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Is Risk Priced In?</h2>
+            <p class="desc">Default rate by interest-rate band — higher rates should track higher risk.</p>
+            <div class="canvas-wrap"><canvas id="chRate"></canvas></div>
+            <div class="insight" id="insRate"></div>
+        </div>
+        <div class="card c3">
+            <h2>Risk Matrix — FICO × DTI</h2>
+            <p class="desc">Two-factor heat map of the current selection. Red cells = tighten policy first.</p>
+            <div class="canvas-wrap"><canvas id="chMatrix"></canvas></div>
+        </div>
+        <div class="card c3">
+            <h2>Term &amp; Amount Exposure</h2>
+            <p class="desc">36 vs 60-month default rates (top) and default rate by loan-size bucket (bottom).</p>
+            <div class="canvas-wrap"><canvas id="chTerm"></canvas></div>
+            <div class="canvas-wrap" style="margin-top:8px"><canvas id="chAmt"></canvas></div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+setActiveTab();
+
+bootApp(() => {
+    /* ----- KPIs re-render on every filter change ----- */
+    onFilterChange(() => {
+        const k = computeKpis(APP.filtered);
+        document.getElementById("kpis").innerHTML =
+            kpiCard("Loans in Scope", fmtK(k.n), "after global filters") +
+            kpiCard("Volume", fmtM(k.volume), "principal issued") +
+            kpiCard("Avg Rate", k.avgRate.toFixed(2) + "%", "across grades") +
+            kpiCard("Avg FICO", Math.round(k.avgFico), "avg DTI " + k.avgDti.toFixed(1)) +
+            kpiCard("Default Rate", k.defaultRate.toFixed(2) + "%", fmtK(k.defaults) + " defaulted", "alert") +
+            kpiCard("Est. Loss", fmtM(k.loss), "85% severity", "alert");
+
+        /* ----- FICO ladder + pricing line ----- */
+        const g = [...groupBy(APP.filtered, r => r.ficoB).entries()]
+            .sort((a, b) => FICO_ORDER.indexOf(a[0]) - FICO_ORDER.indexOf(b[0]))
+            .filter(([, v]) => v.n > 30);
+        makeChart("chGrade", {
+            type: "bar",
+            data: {
+                labels: g.map(([b]) => b),
+                datasets: [
+                    { label: "Default %", data: g.map(([, v]) => v.defaultRate),
+                      backgroundColor: g.map(([, v]) => v.defaultRate < 10 ? "rgba(47,191,143,.75)"
+                                            : v.defaultRate < 18 ? "rgba(245,185,66,.75)" : "rgba(239,91,107,.75)"),
+                      borderRadius: 6, maxBarThickness: 46, yAxisID: "y" },
+                    { label: "Avg rate %", data: g.map(([, v]) => v.avgRate), type: "line",
+                      borderColor: COLORS.accent, backgroundColor: COLORS.accent,
+                      tension: .35, pointRadius: 4, yAxisID: "y1" }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { boxWidth: 12 } } },
+                scales: {
+                    y:  { beginAtZero: true, title: { display: true, text: "Default %" }, ticks: { callback: v => v + "%" } },
+                    y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false },
+                          title: { display: true, text: "Avg rate %" }, ticks: { callback: v => v + "%" } }
+                }
+            }
+        });
+        enableClickDrill(Chart.getChart("chGrade"),
+            (i) => `FICO ${g[i][0]} — selection detail`,
+            (i) => APP.filtered.filter(r => r.ficoB === g[i][0]));
+        if (g.length >= 2) {
+            const worst = g[0], best = g[g.length - 1];
+            document.getElementById("insGrade").innerHTML =
+                `<b>${(worst[1].defaultRate / Math.max(best[1].defaultRate, .1)).toFixed(1)}×</b> risk gap:
+                 “${best[0]}” defaults at <b>${best[1].defaultRate.toFixed(1)}%</b> vs
+                 “${worst[0]}” at <b>${worst[1].defaultRate.toFixed(1)}%</b>, while pricing differs by only
+                 ${(worst[1].avgRate - best[1].avgRate).toFixed(1)} pts.`;
+        }
+
+        /* ----- Status donut (click slice → drill) ----- */
+        const paid = k.n - k.defaults;
+        makeChart("chStatus", {
+            type: "doughnut",
+            data: {
+                labels: ["Fully Paid", "Defaulted"],
+                datasets: [{ data: [paid, k.defaults],
+                    backgroundColor: ["rgba(47,191,143,.8)", "rgba(239,91,107,.8)"], borderWidth: 0 }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, cutout: "62%",
+                plugins: { legend: { position: "bottom" } },
+                onClick: (e, els) => {
+                    if (!els.length) return;
+                    const name = e.chart.data.labels[els[0].index];
+                    const rows = name === "Defaulted" ? APP.filtered.filter(r => r.def === 1)
+                                                       : APP.filtered.filter(r => r.def === 0);
+                    openDrill(name + " — selection detail", rows);
+                }
+            }
+        });
+
+        /* ----- Purpose loss bars (click → inspect purpose) ----- */
+        const p = [...groupBy(APP.filtered, r => r.purpose).entries()]
+            .filter(([, v]) => v.n > 300).sort((a, b) => b[1].loss - a[1].loss).slice(0, 10);
+        const pChart = makeChart("chPurposeLoss",
+            barConfig(p.map(([k2]) => k2), p.map(([, v]) => v.loss / 1e6),
+                      "rgba(239,91,107,.75)", { horizontal: true, maxBar: 18, suffix: "" }));
+        const pc = Chart.getChart("chPurposeLoss");
+        pc.options.scales.x.ticks.callback = v => "$" + v + "M";
+        pc.update();
+        enableClickDrill(pChart,
+            (i) => `Purpose: ${p[i][0]} — selection detail`,
+            (i) => APP.filtered.filter(r => r.purpose === p[i][0]));
+
+        /* ----- Rate bands ----- */
+        const r = [...groupBy(APP.filtered, r => r.rateB).entries()]
+            .sort((a, b) => RATE_ORDER.indexOf(a[0]) - RATE_ORDER.indexOf(b[0]));
+        makeChart("chRate", barConfig(r.map(([b]) => b), r.map(([, v]) => v.defaultRate), "rgba(79,140,255,.75)"));
+        if (r.length >= 2) {
+            const lo = r[0][1], hi = r[r.length - 1][1];
+            document.getElementById("insRate").innerHTML =
+                `<b>${lo.defaultRate.toFixed(1)}%</b> default under ${r[0][0]} pricing vs
+                 <b>${hi.defaultRate.toFixed(1)}%</b> at ${r[r.length - 1][0]} —
+                 rates climb ~${(hi.defaultRate / Math.max(lo.defaultRate, .1)).toFixed(0)}× with risk.`;
+        }
+
+        /* ----- Heat map ----- */
+        const m = [...groupBy(APP.filtered, r => r.ficoB + "|" + r.dtiB).entries()]
+            .filter(([, v]) => v.n > 30);
+        const cell = Object.fromEntries(m.map(([k2, v]) => [k2, v.defaultRate]));
+        const data = [];
+        FICO_ORDER.forEach((f, yi) => DTI_ORDER.forEach((d, xi) => {
+            const v = cell[f + "|" + d];
+            if (v !== undefined) data.push({ x: xi, y: yi, v });
+        }));
+        const maxV = Math.max(...data.map(x => x.v), 1);
+        makeChart("chMatrix", {
+            type: "matrix",
+            data: { datasets: [{
+                data,
+                backgroundColor: c => {
+                    const a = c.dataset.data[c.dataIndex];
+                    return a ? `rgba(239,91,107,${0.08 + 0.82 * (a.v / maxV)})` : "transparent";
+                },
+                borderColor: "rgba(42,53,85,.9)", borderWidth: 1,
+                width: ({ chart }) => (chart.chartArea || {}).width / DTI_ORDER.length - 4,
+                height: ({ chart }) => (chart.chartArea || {}).height / FICO_ORDER.length - 4,
+            }]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: {
+                        title: c => `${FICO_ORDER[c[0].raw.y]} · ${DTI_ORDER[c[0].raw.x]}`,
+                        label: c => ` Default rate: ${c.raw.v.toFixed(1)}%`
+                    }}
+                },
+                scales: {
+                    x: { type: "linear", min: -0.5, max: DTI_ORDER.length - 0.5, display: false },
+                    y: { type: "linear", min: -0.5, max: FICO_ORDER.length - 0.5, display: false }
+                }
+            }
+        });
+        const mw = document.getElementById("chMatrix").parentElement;
+        let legend = mw.parentElement.querySelector(".mx-legend");
+        if (!legend) {
+            legend = document.createElement("div");
+            legend.className = "mx-legend";
+            legend.style.cssText = "display:flex;justify-content:space-between;font-size:10.5px;color:#6e675a;margin-top:6px";
+            legend.innerHTML = `<span>DTI →&nbsp;${DTI_ORDER.join(" · ")}</span><span>↑ better FICO</span>`;
+            mw.parentElement.appendChild(legend);
+        }
+
+        /* ----- Term + amount ----- */
+        const t = [...groupBy(APP.filtered, r => r.term).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        enableClickFilter(makeChart("chTerm", {
+            type: "bar",
+            data: { labels: t.map(([k2]) => k2), datasets: [{ data: t.map(([, v]) => v.defaultRate),
+                backgroundColor: ["rgba(79,140,255,.75)", "rgba(239,91,107,.75)"], borderRadius: 6, maxBarThickness: 60 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } }
+        }), "term");
+
+        const a = [...groupBy(APP.filtered, r => Math.floor(r.amt / 5000) * 5000).entries()].sort((x, y) => x[0] - y[0]);
+        makeChart("chAmt", {
+            type: "line",
+            data: { labels: a.map(([k2]) => "$" + fmtK(k2)),
+                    datasets: [{ data: a.map(([, v]) => v.defaultRate), borderColor: COLORS.warn,
+                                 backgroundColor: "rgba(245,185,66,.15)", fill: true, tension: .3, pointRadius: 3 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                       scales: { y: { beginAtZero: true, ticks: { callback: v => v + "%" } } } }
+        });
+    });
+});
+</script>
+{% endblock %}

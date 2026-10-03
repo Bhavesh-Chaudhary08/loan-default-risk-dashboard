@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local environments
+.venv/
+
+# Freebuff internals
+.freebuff/
+
+# Local run artifacts
+data/.flask.log
+data/.server.pid

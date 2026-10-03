@@ -1,0 +1,10 @@
+# Not needed inside the container
+.git/
+.github/
+.vscode/
+.venv/
+__pycache__/
+*.pyc
+.freebuff/
+data/.flask.log
+data/.server.pid

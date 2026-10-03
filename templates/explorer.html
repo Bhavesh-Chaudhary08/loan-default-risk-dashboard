@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1 class="page-title">§4 · Segment Workbench</h1>
+    <p class="page-sub">For the credit committee: isolate custom risk segments, rank them by exposure, and examine any line item in detail.</p>
+
+    <section class="kpi-row" id="kpis"></section>
+
+    <section class="grid">
+        <div class="card c3">
+            <h2>Heat Map — Choose Your Dimensions</h2>
+            <p class="desc">Default rate by any two dimensions. The redder the cell, the hotter the segment. Click a cell to drill in.</p>
+            <div class="filters" style="margin-bottom:12px">
+                <button id="mxX1" class="active">DTI →</button>
+                <button id="mxX2">Purpose →</button>
+                <button id="mxX3">Home →</button>
+                <span style="color:var(--muted);font-size:12px;align-self:center">rows: FICO band</span>
+            </div>
+            <div class="canvas-wrap"><canvas id="chMatrix"></canvas></div>
+            <div class="insight" id="insMatrix"></div>
+        </div>
+        <div class="card c3">
+            <h2>FICO Distribution of Selection</h2>
+            <p class="desc">Portfolio composition in 10-point bins — overlays the global filters.</p>
+            <div class="canvas-wrap"><canvas id="chHist"></canvas></div>
+            <div class="insight" id="insHist"></div>
+        </div>
+        <div class="card c6">
+            <h2>Segment Workbench — click column headers to sort, click rows to drill down</h2>
+            <p class="desc">Every FICO × DTI segment in the filtered selection, ranked by estimated loss. Toggle the quick filters above the table.</p>
+            <div class="filters" id="segFilters"></div>
+            <div id="segTable" style="max-height:520px;overflow-y:auto"></div>
+        </div>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+setActiveTab();
+
+let segSort = { key: "estLoss", dir: -1 };
+let segFilterIdx = 0;
+let mxXMode = "dti";
+
+const SEG_FILTERS = [
+    { label: "All segments", f: () => true },
+    { label: "Default > 20%", f: s => s.dr > 20 },
+    { label: "Loss > $5M", f: s => s.estLoss > 5e6 },
+    { label: "≥ 2,000 loans", f: s => s.n >= 2000 },
+];
+
+bootApp(() => {
+    /* KPI strip */
+    onFilterChange(() => {
+        const k = computeKpis(APP.filtered);
+        document.getElementById("kpis").innerHTML =
+            kpiCard("Loans", fmtK(k.n), "in scope") +
+            kpiCard("Default Rate", k.defaultRate.toFixed(2) + "%", fmtK(k.defaults) + " defaulted", "alert") +
+            kpiCard("Volume", fmtM(k.volume), "principal issued") +
+            kpiCard("Est. Loss", fmtM(k.loss), "85% severity", "alert") +
+            kpiCard("Avg FICO", Math.round(k.avgFico), "avg DTI " + k.avgDti.toFixed(1)) +
+            kpiCard("Segments", String(new Set(APP.filtered.map(r => r.ficoB + "|" + r.dtiB)).size), "FICO × DTI cells");
+        drawMatrix();
+        drawHist();
+        drawSegments();
+    });
+
+    /* ----- Matrix dimension toggles ----- */
+    const dimDefs = {
+        dti:    { key: r => r.dtiB,   order: DTI_ORDER,   label: "DTI" },
+        purpose:{ key: r => r.purpose,order: null,        label: "Purpose" },
+        home:   { key: r => r.home,   order: null,        label: "Home" },
+    };
+    ["mxX1", "mxX2", "mxX3"].forEach((id, i) => {
+        const mode = ["dti", "purpose", "home"][i];
+        document.getElementById(id).onclick = () => {
+            mxXMode = mode;
+            document.querySelectorAll(".filters button[id^=mxX]").forEach(b => b.classList.remove("active"));
+            document.getElementById(id).classList.add("active");
+            drawMatrix();
+        };
+    });
+
+    function drawMatrix() {
+        const rows = APP.filtered;
+        const xDim = dimDefs[mxXMode];
+        const xKeys = xDim.order
+            ? xDim.order.filter(b => rows.some(r => xDim.key(r) === b))
+            : [...new Set(rows.map(xDim.key))].sort();
+        const yKeys = FICO_ORDER.filter(b => rows.some(r => r.ficoB === b));
+
+        const cellMap = new Map();
+        rows.forEach(r => {
+            const k = r.ficoB + "|" + xDim.key(r);
+            if (!cellMap.has(k)) cellMap.set(k, { n: 0, d: 0 });
+            const c = cellMap.get(k); c.n++; c.d += r.def;
+        });
+
+        const data = [];
+        yKeys.forEach((f, yi) => xKeys.forEach((xv, xi) => {
+            const c = cellMap.get(f + "|" + xv);
+            if (c && c.n > 30) data.push({ x: xi, y: yi, v: 100 * c.d / c.n, n: c.n });
+        }));
+        const maxV = Math.max(...data.map(d => d.v), 1);
+
+        makeChart("chMatrix", {
+            type: "matrix",
+            data: { datasets: [{
+                data,
+                backgroundColor: c => {
+                    const a = c.dataset.data[c.dataIndex];
+                    return a ? `rgba(239,91,107,${0.06 + 0.84 * (a.v / maxV)})` : "transparent";
+                },
+                borderColor: "rgba(42,53,85,.9)", borderWidth: 1,
+                width: ({ chart }) => (chart.chartArea || {}).width / xKeys.length - 4,
+                height: ({ chart }) => (chart.chartArea || {}).height / yKeys.length - 4,
+            }]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: {
+                        title: c => `${yKeys[c[0].raw.y]} · ${xKeys[c[0].raw.x]}`,
+                        label: c => [` Default rate: ${c.raw.v.toFixed(1)}%`, ` Loans: ${c.raw.n.toLocaleString()}`, "↳ click to drill"] }
+                    }
+                },
+                onClick: (e) => {
+                    const evtItems = e.chart.getElementsAtEventForMode(e, "nearest", { intersect: true }, true);
+                    if (!evtItems.length) return;
+                    const cell = e.chart.data.datasets[0].data[evtItems[0].index];
+                    if (!cell) return;
+                    const fico = yKeys[cell.y], xv = xKeys[cell.x];
+                    const sub = rows.filter(r => r.ficoB === fico && xDim.key(r) === xv);
+                    openDrill(`${fico} × ${xv}`, sub);
+                },
+                scales: {
+                    x: { type: "linear", min: -0.5, max: xKeys.length - 0.5, display: false },
+                    y: { type: "linear", min: -0.5, max: yKeys.length - 0.5, display: false }
+                }
+            }
+        });
+        const hot = [...data].sort((a, b) => b.v - a.v)[0];
+        document.getElementById("insMatrix").innerHTML = hot
+            ? `Hottest cell: <b>${yKeys[hot.y]} × ${xKeys[hot.x]}</b> defaults at
+               <b>${hot.v.toFixed(1)}%</b> (${hot.n.toLocaleString()} loans) — first stop for policy tightening.`
+            : "No segments above the 30-loan threshold in this selection.";
+    }
+
+    function drawHist() {
+        const bins = new Map();
+        APP.filtered.forEach(r => {
+            const b = Math.floor(r.fico / 10) * 10;
+            bins.set(b, (bins.get(b) || 0) + 1);
+        });
+        const keys = [...bins.keys()].sort((a, b) => a - b);
+        makeChart("chHist", {
+            type: "bar",
+            data: { labels: keys, datasets: [{ data: keys.map(k => bins.get(k)),
+                backgroundColor: "rgba(79,140,255,.6)", borderRadius: 4, maxBarThickness: 20 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { title: { display: true, text: "FICO (10-pt bins)" } },
+                          y: { beginAtZero: true, title: { display: true, text: "Loans" } } }
+            }
+        });
+        const total = APP.filtered.length;
+        const modal = keys.reduce((a, b) => bins.get(a) > bins.get(b) ? a : b, keys[0]);
+        document.getElementById("insHist").innerHTML =
+            `Modal FICO bin: <b>${modal}s</b> (${((100 * bins.get(modal)) / total).toFixed(0)}% of selection).
+             Selection is ${total < APP.rows.length ? "filtered — distribution shifted vs full book" : "the full 2007–11 book"}.`;
+    }
+
+    /* ----- Segment workbench ----- */
+    function buildSegFilters() {
+        const box = document.getElementById("segFilters");
+        box.innerHTML = "";
+        SEG_FILTERS.forEach((s, i) => {
+            const b = document.createElement("button");
+            b.textContent = s.label;
+            if (i === segFilterIdx) b.classList.add("active");
+            b.onclick = () => { segFilterIdx = i; buildSegFilters(); drawSegments(); };
+            box.appendChild(b);
+        });
+    }
+
+    function drawSegments() {
+        const byCell = groupBy(APP.filtered, r => r.ficoB + "|" + r.dtiB);
+        const segs = [...byCell.entries()].filter(([, v]) => v.n > 100).map(([k, v]) => {
+            const [ficoB, dtiB] = k.split("|");
+            return { ficoB, dtiB, n: v.n, defaults: v.defaults, dr: v.defaultRate,
+                     volume: v.volume, estLoss: v.loss };
+        }).filter(SEG_FILTERS[segFilterIdx].f);
+
+        segs.sort((a, b) => (a[segSort.key] > b[segSort.key] ? 1 : -1) * segSort.dir);
+
+        const arrow = k => segSort.key === k ? `<span class="arrow">${segSort.dir === 1 ? "▲" : "▼"}</span>` : "";
+        const head = (label, key, num) =>
+            `<th class="${num ? "num" : ""}" data-key="${key}">${label}${arrow(key)}</th>`;
+
+        document.getElementById("segTable").innerHTML = `
+            <table>
+              <thead><tr>
+                ${head("FICO band", "ficoB")} ${head("DTI band", "dtiB")}
+                ${head("Loans", "n", true)} ${head("Defaults", "defaults", true)}
+                ${head("Default %", "dr", true)} ${head("Volume", "volume", true)}
+                ${head("Est. loss", "estLoss", true)}
+              </tr></thead>
+              <tbody>
+                ${segs.map(s => `
+                  <tr class="clickable" data-fico="${s.ficoB}" data-dti="${s.dtiB}">
+                    <td>${s.ficoB}</td><td>${s.dtiB}</td>
+                    <td class="num">${fmtK(s.n)}</td>
+                    <td class="num">${fmtK(s.defaults)}</td>
+                    <td class="num"><span class="pill ${ratePill(s.dr)}">${s.dr.toFixed(2)}%</span></td>
+                    <td class="num">${fmtM(s.volume)}</td>
+                    <td class="num" style="color:var(--bad)">$${(s.estLoss / 1e6).toFixed(1)}M</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>`;
+
+        document.querySelectorAll("#segTable th").forEach(th => {
+            th.onclick = () => {
+                const key = th.dataset.key;
+                segSort = { key, dir: segSort.key === key ? -segSort.dir : -1 };
+                drawSegments();
+            };
+        });
+        document.querySelectorAll("#segTable tr.clickable").forEach(tr => {
+            tr.onclick = () => {
+                const sub = APP.filtered.filter(r => r.ficoB === tr.dataset.fico && r.dtiB === tr.dataset.dti);
+                openDrill(`${tr.dataset.fico} × ${tr.dataset.dti}`, sub);
+            };
+        });
+    }
+
+    buildSegFilters();
+});
+</script>
+{% endblock %}

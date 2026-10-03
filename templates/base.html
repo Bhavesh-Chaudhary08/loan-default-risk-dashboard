@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}{{ title }}{% endblock %} — Loan Default Risk Memorandum</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="icon" href="data:,">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js"></script>
+</head>
+<body data-page="{{ page_id }}">
+
+<nav class="nav">
+    <span class="brand">Credit Risk <span>Memorandum</span></span>
+    <a class="tab" data-page="overview" href="{{ url_for('index') }}">Overview</a>
+    <a class="tab" data-page="borrower" href="{{ url_for('borrower') }}">Borrower Analytics</a>
+    <a class="tab" data-page="loans" href="{{ url_for('loans') }}">Loans &amp; Pricing</a>
+    <a class="tab" data-page="explorer" href="{{ url_for('explorer') }}">Risk Explorer</a>
+    <span class="spacer"></span>
+    <span class="dataset">LendingClub 2007–11 · n = 39,252</span>
+    <span class="tag">Working Paper</span>
+</nav>
+
+<section class="filterbar" id="filterbar"></section>
+
+<main class="page">
+    {% block content %}{% endblock %}
+</main>
+
+<div class="overlay" id="drillOverlay" onclick="closeDrill()"></div>
+<aside class="drill" id="drillPanel">
+    <div class="drill-head"><h3 id="drillTitle">Selection</h3><button class="close" onclick="closeDrill()">×</button></div>
+    <div class="drill-body" id="drillBody"></div>
+</aside>
+
+<footer>
+    {% block footer %}
+    Source: LendingClub 2007–2011 (Kaggle). Flask + pandas ETL into SQLite; exhibits rendered client-side.
+    Companion SQL: <a href="{{ url_for('api_sql') }}">analysis_queries.sql</a>. Loss figures assume 85% severity at default.
+    {% endblock %}
+</footer>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
