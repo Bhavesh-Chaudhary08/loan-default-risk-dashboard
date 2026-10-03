@@ -10,6 +10,11 @@ pinned: false
 
 # 💳 Loan Default Risk Dashboard — BFSI Analytics
 
+[![Live demo](https://img.shields.io/badge/live-demo-7a1f2b?style=flat-square)](https://bhaveshcdhry.pythonanywhere.com)
+
+**▶ Live dashboard: [bhaveshcdhry.pythonanywhere.com](https://bhaveshcdhry.pythonanywhere.com)**
+— always on, free-hosted on PythonAnywhere (Flask + SQLite + Docker-ready).
+
 End-to-end data analytics project in the **BFSI (Banking & Financial Services)** domain:
 a credit-risk analysis of a real peer-to-peer lending portfolio, with an interactive
 executive dashboard.
