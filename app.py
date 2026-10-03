@@ -20,15 +20,22 @@ import sqlite3
 from pathlib import Path
 
 from flask import Flask, g, jsonify, render_template
-from flask_compress import Compress
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "data" / "loans.db"
 
 app = Flask(__name__)
+
 # Gzip responses: /api/records is ~10 MB raw; compressed it is ~1 MB, which
-# keeps the hosted free-tier response well under proxy limits and loads fast.
-Compress(app)
+# keeps hosted free-tier responses well under proxy limits and loads fast.
+# flask-compress is in requirements.txt (Docker/PaaS installs get gzip);
+# hosts that run system Python without it serve plain responses instead.
+try:
+    from flask_compress import Compress
+
+    Compress(app)
+except ImportError:
+    pass
 
 
 # --------------------------------------------------------------------------
