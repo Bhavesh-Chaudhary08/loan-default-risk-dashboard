@@ -1,3 +1,13 @@
+---
+title: Loan Default Risk Dashboard
+emoji: 💳
+colorFrom: blue
+colorTo: red
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 💳 Loan Default Risk Dashboard — BFSI Analytics
 
 End-to-end data analytics project in the **BFSI (Banking & Financial Services)** domain:

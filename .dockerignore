@@ -8,3 +8,4 @@ __pycache__/
 .freebuff/
 data/.flask.log
 data/.server.pid
+.env
